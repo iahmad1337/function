@@ -318,18 +318,18 @@ TEST(function_test, argument_by_value_large) {
   non_copyable a = f(non_copyable());
 }
 
-TEST(function_test,
-     recursive_test){function<int(int)> fib = [&fib](int n) -> int {
-  switch (n) {
-  case 0:
-    return 0;
-  case 1:
-    return 1;
-  default:
-    return fib(n - 1) + fib(n - 2);
-  }
-}};
-EXPECT_EQ(55, fib(10));
+TEST(function_test, recursive_test) {
+  function<int(int)> fib = [&fib](int n) -> int {
+    switch (n) {
+    case 0:
+      return 0;
+    case 1:
+      return 1;
+    default:
+      return fib(n - 1) + fib(n - 2);
+    }
+  };
+  EXPECT_EQ(55, fib(10));
 }
 
 struct foo {
