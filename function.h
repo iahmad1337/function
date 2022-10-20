@@ -13,18 +13,21 @@ public:
 
 namespace function_impl {
 
+using container_t = std::aligned_storage_t<sizeof(void*), alignof(void*)>;
+
 template <typename T>
 static constexpr bool
-    fits_small = (sizeof(T) <= sizeof(void*) &&
+    fits_small = (sizeof(T) <= sizeof(container_t) &&
                   alignof(void*) % alignof(T) == 0 &&
-                  std::is_nothrow_move_constructible<T>::value);
+                  std::is_nothrow_move_constructible_v<T> &&
+                  std::is_nothrow_move_assignable_v<T>);
 
 template <typename R, typename... Args>
 struct storage;
 
 template <typename R, typename... Args>
 struct type_descriptor {
-  using storage_t = function_impl::storage<R, Args...>;
+  using storage_t = storage<R, Args...>;
 
   void (*copy)(storage_t*, storage_t const*);
   void (*move)(storage_t*, storage_t*) noexcept;
@@ -91,7 +94,7 @@ struct type_descriptor {
   }
 
   template <typename T>
-  static void init(storage<R, Args...>& storage, T&& func) {
+  static void init(storage_t& storage, T&& func) {
     if constexpr (fits_small<T>) {
       new (&storage.small) T(std::forward<T>(func));
     } else {
@@ -132,7 +135,7 @@ struct storage {
   }
 
   type_descriptor<R, Args...> const* desc{nullptr};
-  std::aligned_storage_t<sizeof(void*), alignof(void*)> small;
+  container_t small;
 };
 } // namespace function_impl
 
