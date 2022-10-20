@@ -13,129 +13,128 @@ public:
 
 namespace function_impl {
 
+template <typename T>
+static constexpr bool
+    fits_small = (sizeof(T) <= sizeof(void*) &&
+                  alignof(void*) % alignof(T) == 0 &&
+                  std::is_nothrow_move_constructible<T>::value);
+
+template <typename R, typename... Args>
+struct storage;
+
+template <typename R, typename... Args>
+struct type_descriptor {
+  using storage_t = function_impl::storage<R, Args...>;
+
+  void (*copy)(storage_t*, storage_t const*);
+  void (*move)(storage_t*, storage_t*) noexcept;
+  R (*invoke)(storage_t*, Args...);
+  void (*destroy)(storage_t*) noexcept;
+
+  static type_descriptor<R, Args...> const*
+  get_empty_func_descriptor() noexcept {
+    constexpr static type_descriptor<R, Args...> result = {
+        /* copy */
+        [](storage_t* dst, storage_t const*) {
+          dst->desc = get_empty_func_descriptor();
+        },
+        /* move */
+        [](storage_t* dst, storage_t*) noexcept {
+          dst->desc = get_empty_func_descriptor();
+        },
+        /* invoke */
+        [](storage_t*, Args...) -> R {
+          throw bad_function_call{"empty function ivocation"};
+        },
+        /* destroy */
+        [](storage_t*) noexcept { /* noop */ }};
+
+    return &result;
+  }
+
   template <typename T>
-  static constexpr bool
-      fits_small = (sizeof(T) <= sizeof(void*) &&
-                            alignof(void*) % alignof(T) == 0 &&
-                            std::is_nothrow_move_constructible<T>::value);
+  static type_descriptor<R, Args...> const* get_descriptor() {
+    static constexpr type_descriptor<R, Args...> descriptor = {
+        /* copy */
+        [](storage_t* dst, storage_t const* src) {
+          dst->desc = src->desc;
+          if constexpr (fits_small<T>) {
+            new (&dst->small) T(*src->template get<T>());
+          } else {
+            dst->set(new T(*src->template get<T>()));
+          }
+        },
+        /* move */
+        [](storage_t* dst, storage_t* src) noexcept {
+          dst->desc = src->desc;
+          if constexpr (fits_small<T>) {
+            new (&dst->small) T(std::move(*src->template get<T>()));
+          } else {
+            dst->set((void*)src->template get<T>());
+            src->desc = get_empty_func_descriptor();
+          }
+        },
+        /* invoke */
+        [](storage_t* dst, Args... args) -> R {
+          return (*(dst->template get<T>()))(std::forward<Args>(args)...);
+        },
+        /* destroy */
+        [](storage_t* dst) noexcept {
+          if constexpr (fits_small<T>) {
+            dst->template get<T>()->~T();
+          } else {
+            delete dst->template get<T>();
+          }
+        }};
 
-  template <typename R, typename... Args>
-  struct storage;
+    return &descriptor;
+  }
 
-  template <typename R, typename... Args>
-  struct type_descriptor {
-    using storage_t = function_impl::storage<R, Args...>;
-
-    void (*copy)(storage_t*, storage_t const*);
-    void (*move)(storage_t*, storage_t*) noexcept;
-    R (*invoke)(storage_t*, Args...);
-    void (*destroy)(storage_t*) noexcept;
-
-    static type_descriptor<R, Args...> const*
-    get_empty_func_descriptor() noexcept {
-      constexpr static type_descriptor<R, Args...> result = {
-          /* copy */
-          [](storage_t* dst, storage_t const*) {
-            dst->desc = get_empty_func_descriptor();
-          },
-          /* move */
-          [](storage_t* dst, storage_t*) noexcept {
-            dst->desc = get_empty_func_descriptor();
-          },
-          /* invoke */
-          [](storage_t*, Args...) -> R {
-            throw bad_function_call{"empty function ivocation"};
-          },
-          /* destroy */
-          [](storage_t*) noexcept { /* noop */ }
-      };
-
-      return &result;
+  template <typename T>
+  static void init(storage<R, Args...>& storage, T&& func) {
+    if constexpr (fits_small<T>) {
+      new (&storage.small) T(std::forward<T>(func));
+    } else {
+      storage.set(new T(std::forward<T>(func)));
     }
+  }
+};
 
-    template<typename T>
-    static type_descriptor<R, Args...> const* get_descriptor() {
-      static constexpr type_descriptor<R, Args...> descriptor = {
-          /* copy */
-          [](storage_t* dst, storage_t const* src) {
-            dst->desc = src->desc;
-            if constexpr (fits_small<T>) {
-              new (&dst->small) T(*src->template get<T>());
-            } else {
-              dst->set(new T(*src->template get<T>()));
-            }
-          },
-          /* move */
-          [](storage_t* dst, storage_t* src) noexcept {
-            dst->desc = src->desc;
-            if constexpr (fits_small<T>) {
-              new (&dst->small) T(std::move(*src->template get<T>()));
-            } else {
-              dst->set((void*)src->template get<T>());
-              src->desc = get_empty_func_descriptor();
-            }
-          },
-          /* invoke */
-          [](storage_t* dst, Args... args) -> R {
-            return (*(dst->template get<T>()))(std::forward<Args>(args)...);
-          },
-          /* destroy */
-          [](storage_t* dst) noexcept {
-            if constexpr (fits_small<T>) {
-              dst->template get<T>()->~T();
-            } else {
-              delete dst->template get<T>();
-            }
-          }};
+template <typename R, typename... Args>
+struct storage {
 
-      return &descriptor;
+  template <typename T>
+  T* get() {
+    if constexpr (fits_small<T>) {
+      return reinterpret_cast<T*>(&small);
+    } else {
+      return *reinterpret_cast<T**>(&small);
     }
+  }
 
-    template<typename T>
-    static void init(storage<R, Args...>& storage, T&& func) {
-      if constexpr (fits_small<T>) {
-        new (&storage.small) T(std::forward<T>(func));
-      } else {
-        storage.set(new T(std::forward<T>(func)));
-      }
+  template <typename T>
+  T const* get() const {
+    if constexpr (fits_small<T>) {
+      return reinterpret_cast<T const*>(&small);
+    } else {
+      return *reinterpret_cast<T* const*>(&small);
     }
-  };
+  }
 
-  template <typename R, typename... Args>
-  struct storage {
+  void set(void* t) {
+    new (&small)(void*)(t);
+  }
 
-    template <typename T>
-    T* get() {
-      if constexpr (fits_small<T>) {
-        return reinterpret_cast<T*>(&small);
-      } else {
-        return *reinterpret_cast<T**>(&small);
-      }
-    }
+  void swap(storage& other) {
+    using std::swap;
+    swap(desc, other.desc);
+    swap(small, other.small);
+  }
 
-    template <typename T>
-    T const* get() const {
-      if constexpr (fits_small<T>) {
-        return reinterpret_cast<T const*>(&small);
-      } else {
-        return *reinterpret_cast<T* const*>(&small);
-      }
-    }
-
-    void set(void* t) {
-      new (&small)(void*)(t);
-    }
-
-    void swap(storage& other) {
-      using std::swap;
-      swap(desc, other.desc);
-      swap(small, other.small);
-    }
-
-    type_descriptor<R, Args...> const* desc{nullptr};
-    std::aligned_storage_t<sizeof(void*), alignof(void*)> small;
-  };
-}  // namespace function_impl
+  type_descriptor<R, Args...> const* desc{nullptr};
+  std::aligned_storage_t<sizeof(void*), alignof(void*)> small;
+};
+} // namespace function_impl
 
 template <typename T>
 struct function;
