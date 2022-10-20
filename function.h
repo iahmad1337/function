@@ -214,7 +214,7 @@ struct function<R(Args...)> {
   }
 
 private:
-  // This declaration is solely for shotenning some expressions
+  // This declaration is solely for shortenning some expressions
   using desc_t = function_impl::type_descriptor<R, Args...>;
 
   function_impl::storage<R, Args...> storage;
