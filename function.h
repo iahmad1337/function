@@ -39,11 +39,13 @@ struct type_descriptor {
     constexpr static type_descriptor<R, Args...> result = {
         /* copy */
         [](storage_t* dst, storage_t const*) {
-          dst->desc = get_empty_func_descriptor();
+          dst->desc->destroy(dst);
+          // dst->desc = get_empty_func_descriptor();
         },
         /* move */
         [](storage_t* dst, storage_t*) noexcept {
-          dst->desc = get_empty_func_descriptor();
+          dst->desc->destroy(dst);
+          // dst->desc = get_empty_func_descriptor();
         },
         /* invoke */
         [](storage_t*, Args...) -> R {
@@ -60,22 +62,25 @@ struct type_descriptor {
     static constexpr type_descriptor<R, Args...> descriptor = {
         /* copy */
         [](storage_t* dst, storage_t const* src) {
-          dst->desc = src->desc;
           if constexpr (fits_small<T>) {
+            dst->desc->destroy(dst);
             new (&dst->small) T(*src->template get<T>());
           } else {
+            dst->desc->destroy(dst);
             dst->set(new T(*src->template get<T>()));
           }
         },
         /* move */
         [](storage_t* dst, storage_t* src) noexcept {
-          dst->desc = src->desc;
           if constexpr (fits_small<T>) {
+            dst->desc->destroy(dst);
             new (&dst->small) T(std::move(*src->template get<T>()));
           } else {
+            dst->desc->destroy(dst);
             dst->set((void*)src->template get<T>());
-            src->desc = get_empty_func_descriptor();
           }
+          // src->desc = get_empty_func_descriptor();
+          // src->desc->destroy(src);
         },
         /* invoke */
         [](storage_t* dst, Args... args) -> R {
@@ -129,12 +134,31 @@ struct storage {
   }
 
   void swap(storage& other) {
+    storage tmp;
+    auto empty = type_descriptor<R, Args...>::get_empty_func_descriptor();
+    auto dThis = desc;
+    auto dOther = other.desc;
+
+    tmp.desc = empty;
+    dThis->move(&tmp, this);
+    this->desc = empty;
+
+    dOther->move(this, &other);
+    other.desc = empty;
+
+    dThis->move(&other, &tmp);
+    tmp.desc = empty;
+
+    desc = dOther;
+    other.desc = dThis;
     using std::swap;
-    swap(desc, other.desc);
-    swap(small, other.small);
+    // swap(desc, other.desc);
+    // swap(small, other.small);
   }
 
-  type_descriptor<R, Args...> const* desc{nullptr};
+  type_descriptor<R, Args...> const* desc{nullptr}; // TODO: put empty
+                                                    // descriptor in
+                                                    // default ctor
   container_t small;
 };
 } // namespace function_impl
@@ -148,14 +172,15 @@ struct function<R(Args...)> {
     storage.desc = desc_t::get_empty_func_descriptor();
   }
 
-  function(function const& other) {
+  function(function const& other) : function() {
+    other.storage.desc->copy(&storage, &other.storage);
     storage.desc = other.storage.desc;
-    storage.desc->copy(&storage, &other.storage);
   }
 
-  function(function&& other) noexcept {
+  function(function&& other) noexcept : function() {
+    other.storage.desc->move(&storage, &other.storage);
     storage.desc = other.storage.desc;
-    storage.desc->move(&storage, &other.storage);
+    other.storage.desc = desc_t::get_empty_func_descriptor();
   }
 
   function& operator=(function const& other) {
