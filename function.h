@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <new>
 #include <stdexcept>
 #include <type_traits>
@@ -16,11 +17,10 @@ namespace function_impl {
 using container_t = std::aligned_storage_t<sizeof(void*), alignof(void*)>;
 
 template <typename T>
-static constexpr bool
-    fits_small = (sizeof(T) <= sizeof(container_t) &&
-                  alignof(void*) % alignof(T) == 0 &&
-                  std::is_nothrow_move_constructible_v<T> &&
-                  std::is_nothrow_move_assignable_v<T>);
+static constexpr bool fits_small = (sizeof(T) <= sizeof(container_t) &&
+                                    alignof(void*) % alignof(T) == 0 &&
+                                    std::is_nothrow_move_constructible_v<T> &&
+                                    std::is_nothrow_move_assignable_v<T>);
 
 template <typename R, typename... Args>
 struct storage;
@@ -38,14 +38,16 @@ struct type_descriptor {
   get_empty_func_descriptor() noexcept {
     constexpr static type_descriptor<R, Args...> result = {
         /* copy */
-        [](storage_t* dst, storage_t const*) {
-          dst->desc->destroy(dst);
-          // dst->desc = get_empty_func_descriptor();
+        [](storage_t* dst, storage_t const* src) {
+          // Invariant: src & dst have empty descriptor
+          assert(dst->desc == get_empty_func_descriptor());
+          assert(src->desc == get_empty_func_descriptor());
         },
         /* move */
-        [](storage_t* dst, storage_t*) noexcept {
-          dst->desc->destroy(dst);
-          // dst->desc = get_empty_func_descriptor();
+        [](storage_t* dst, storage_t* src) noexcept {
+          // Invariant: src & dst have empty descriptor
+          assert(dst->desc == get_empty_func_descriptor());
+          assert(src->desc == get_empty_func_descriptor());
         },
         /* invoke */
         [](storage_t*, Args...) -> R {
@@ -62,25 +64,28 @@ struct type_descriptor {
     static constexpr type_descriptor<R, Args...> descriptor = {
         /* copy */
         [](storage_t* dst, storage_t const* src) {
+          // Pre: dst has empty descriptor
+          assert(dst->desc == get_empty_func_descriptor());
           if constexpr (fits_small<T>) {
-            dst->desc->destroy(dst);
             new (&dst->small) T(*src->template get<T>());
           } else {
-            dst->desc->destroy(dst);
             dst->set(new T(*src->template get<T>()));
           }
+          dst->desc = src->desc;
         },
         /* move */
         [](storage_t* dst, storage_t* src) noexcept {
+          // Pre: dst has empty descriptor
+          // Post: src has empty descriptor
+          assert(dst->desc == get_empty_func_descriptor());
           if constexpr (fits_small<T>) {
-            dst->desc->destroy(dst);
             new (&dst->small) T(std::move(*src->template get<T>()));
           } else {
-            dst->desc->destroy(dst);
             dst->set((void*)src->template get<T>());
           }
-          // src->desc = get_empty_func_descriptor();
-          // src->desc->destroy(src);
+          dst->desc = src->desc;
+          src->desc = get_empty_func_descriptor();
+          assert(src->desc == get_empty_func_descriptor());
         },
         /* invoke */
         [](storage_t* dst, Args... args) -> R {
@@ -100,6 +105,7 @@ struct type_descriptor {
 
   template <typename T>
   static void init(storage_t& storage, T&& func) {
+    storage.desc = get_descriptor<T>();
     if constexpr (fits_small<T>) {
       new (&storage.small) T(std::forward<T>(func));
     } else {
@@ -110,6 +116,8 @@ struct type_descriptor {
 
 template <typename R, typename... Args>
 struct storage {
+
+  storage() : desc{type_descriptor<R, Args...>::get_empty_func_descriptor()} {}
 
   template <typename T>
   T* get() {
@@ -135,30 +143,13 @@ struct storage {
 
   void swap(storage& other) {
     storage tmp;
-    auto empty = type_descriptor<R, Args...>::get_empty_func_descriptor();
-    auto dThis = desc;
-    auto dOther = other.desc;
 
-    tmp.desc = empty;
-    dThis->move(&tmp, this);
-    this->desc = empty;
-
-    dOther->move(this, &other);
-    other.desc = empty;
-
-    dThis->move(&other, &tmp);
-    tmp.desc = empty;
-
-    desc = dOther;
-    other.desc = dThis;
-    using std::swap;
-    // swap(desc, other.desc);
-    // swap(small, other.small);
+    this->desc->move(&tmp, this);
+    other.desc->move(this, &other);
+    tmp.desc->move(&other, &tmp);
   }
 
-  type_descriptor<R, Args...> const* desc{nullptr}; // TODO: put empty
-                                                    // descriptor in
-                                                    // default ctor
+  type_descriptor<R, Args...> const* desc{nullptr};
   container_t small;
 };
 } // namespace function_impl
@@ -168,19 +159,14 @@ struct function;
 
 template <typename R, typename... Args>
 struct function<R(Args...)> {
-  function() {
-    storage.desc = desc_t::get_empty_func_descriptor();
-  }
+  function() = default;
 
   function(function const& other) : function() {
     other.storage.desc->copy(&storage, &other.storage);
-    storage.desc = other.storage.desc;
   }
 
   function(function&& other) noexcept : function() {
     other.storage.desc->move(&storage, &other.storage);
-    storage.desc = other.storage.desc;
-    other.storage.desc = desc_t::get_empty_func_descriptor();
   }
 
   function& operator=(function const& other) {
@@ -203,7 +189,6 @@ struct function<R(Args...)> {
 
   template <typename F>
   function(F f) {
-    storage.desc = desc_t::template get_descriptor<F>();
     desc_t::template init<F>(storage, std::move(f));
   }
 
