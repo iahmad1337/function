@@ -149,6 +149,10 @@ struct storage {
     tmp.desc->move(&other, &tmp);
   }
 
+  ~storage() {
+    desc->destroy(this);
+  }
+
   type_descriptor<R, Args...> const* desc{nullptr};
   container_t small;
 };
@@ -218,9 +222,7 @@ struct function<R(Args...)> {
     return storage.desc != desc_t::get_empty_func_descriptor();
   }
 
-  ~function() {
-    storage.desc->destroy(&storage);
-  }
+  ~function() = default;
 
   void swap(function& other) noexcept {
     storage.swap(other.storage);
