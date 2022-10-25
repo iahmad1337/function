@@ -80,6 +80,7 @@ struct type_descriptor {
           assert(dst->desc == get_empty_func_descriptor());
           if constexpr (fits_small<T>) {
             new (&dst->small) T(std::move(*src->template get<T>()));
+            src->desc->destroy(src);
           } else {
             dst->set((void*)src->template get<T>());
           }
